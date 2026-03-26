@@ -171,3 +171,592 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // Helper: build the minimum-valid full JSON for InvoiceData
+    // -------------------------------------------------------------------------
+    fn full_invoice_json() -> &'static str {
+        r#"{
+            "number": "FV-01-01-26",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller Corp",
+                "address": {
+                    "country_code": "PL",
+                    "street": "Main St",
+                    "building_number": "1",
+                    "flat_number": "2",
+                    "city": "Warsaw",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer Ltd",
+                "address": {
+                    "country_code": "PL",
+                    "street": "Second Ave",
+                    "building_number": "10",
+                    "city": "Krakow",
+                    "postal_code": "30-300"
+                }
+            },
+            "positions": [
+                {
+                    "name": "Widget",
+                    "count": "2",
+                    "price": "19.00",
+                    "tax_rate": "23"
+                }
+            ],
+            "payment_details": {
+                "bank_name": "Bank PKO",
+                "account_number": "10 1010 1010 1010",
+                "swift": "PKOPPLPW",
+                "period": 14
+            }
+        }"#
+    }
+
+    // -------------------------------------------------------------------------
+    // Address deserialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_address_deserialize_with_flat_number() {
+        let json = r#"{
+            "country_code": "PL",
+            "street": "Ulica",
+            "building_number": "5",
+            "flat_number": "3A",
+            "city": "Warsaw",
+            "postal_code": "00-001"
+        }"#;
+        let addr: Address = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(addr.country_code, "PL");
+        assert_eq!(addr.street, "Ulica");
+        assert_eq!(addr.building_number, "5");
+        assert_eq!(addr.flat_number, Some("3A".to_string()));
+        assert_eq!(addr.city, "Warsaw");
+        assert_eq!(addr.postal_code, "00-001");
+    }
+
+    #[test]
+    fn test_address_deserialize_without_flat_number() {
+        let json = r#"{
+            "country_code": "DE",
+            "street": "Berliner Str",
+            "building_number": "42",
+            "city": "Berlin",
+            "postal_code": "10115"
+        }"#;
+        let addr: Address = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(addr.flat_number, None);
+        assert_eq!(addr.city, "Berlin");
+    }
+
+    #[test]
+    fn test_address_deserialize_null_flat_number() {
+        let json = r#"{
+            "country_code": "PL",
+            "street": "Kwiatowa",
+            "building_number": "7",
+            "flat_number": null,
+            "city": "Gdansk",
+            "postal_code": "80-001"
+        }"#;
+        let addr: Address = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(addr.flat_number, None);
+    }
+
+    #[test]
+    fn test_address_deserialize_missing_required_field_fails() {
+        // Missing "city"
+        let json = r#"{
+            "country_code": "PL",
+            "street": "Kwiatowa",
+            "building_number": "7",
+            "postal_code": "80-001"
+        }"#;
+        let result: Result<Address, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "expected error when required field is missing");
+    }
+
+    // -------------------------------------------------------------------------
+    // Subject deserialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_subject_deserialize_valid() {
+        let json = r#"{
+            "nip": "1234567890",
+            "name": "Test Company",
+            "address": {
+                "country_code": "PL",
+                "street": "Test St",
+                "building_number": "1",
+                "city": "Warsaw",
+                "postal_code": "00-001"
+            }
+        }"#;
+        let subject: Subject = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(subject.nip, "1234567890");
+        assert_eq!(subject.name, "Test Company");
+    }
+
+    #[test]
+    fn test_subject_deserialize_missing_nip_fails() {
+        let json = r#"{
+            "name": "Test Company",
+            "address": {
+                "country_code": "PL",
+                "street": "Test St",
+                "building_number": "1",
+                "city": "Warsaw",
+                "postal_code": "00-001"
+            }
+        }"#;
+        let result: Result<Subject, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "expected error when nip is missing");
+    }
+
+    // -------------------------------------------------------------------------
+    // Position deserialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_position_deserialize_tax_rate_23() {
+        let json = r#"{"name": "Item A", "count": "1", "price": "100.00", "tax_rate": "23"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.name, "Item A");
+        assert_eq!(pos.tax_rate, TaxRate::Rate23);
+    }
+
+    #[test]
+    fn test_position_deserialize_tax_rate_8() {
+        let json = r#"{"name": "Item B", "count": "2", "price": "50.00", "tax_rate": "8"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.tax_rate, TaxRate::Rate8);
+    }
+
+    #[test]
+    fn test_position_deserialize_tax_rate_5() {
+        let json = r#"{"name": "Item C", "count": "3", "price": "10.00", "tax_rate": "5"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.tax_rate, TaxRate::Rate5);
+    }
+
+    #[test]
+    fn test_position_deserialize_tax_rate_zw() {
+        let json = r#"{"name": "Item D", "count": "1", "price": "0.01", "tax_rate": "zw"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.tax_rate, TaxRate::Zw);
+    }
+
+    #[test]
+    fn test_position_deserialize_tax_rate_np_i() {
+        let json = r#"{"name": "Item E", "count": "1", "price": "200.00", "tax_rate": "np I"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.tax_rate, TaxRate::NpI);
+    }
+
+    #[test]
+    fn test_position_deserialize_invalid_tax_rate_fails() {
+        let json = r#"{"name": "Bad Item", "count": "1", "price": "10.00", "tax_rate": "INVALID"}"#;
+        let result: Result<Position, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "expected error for invalid tax rate");
+    }
+
+    #[test]
+    fn test_position_deserialize_decimal_count_and_price() {
+        let json = r#"{"name": "Fractional", "count": "2.5", "price": "9.99", "tax_rate": "23"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pos.count.to_string(), "2.5");
+        assert_eq!(pos.price.to_string(), "9.99");
+    }
+
+    // -------------------------------------------------------------------------
+    // PaymentDetails deserialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_payment_details_full() {
+        let json = r#"{
+            "bank_name": "PKO Bank",
+            "account_number": "10 2030 4050 6070",
+            "swift": "PKOPPLPW",
+            "period": 30
+        }"#;
+        let pd: PaymentDetails = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pd.bank_name, "PKO Bank");
+        assert_eq!(pd.account_number, "10 2030 4050 6070");
+        assert_eq!(pd.swift, Some("PKOPPLPW".to_string()));
+        assert_eq!(pd.period, Some(30));
+    }
+
+    #[test]
+    fn test_payment_details_without_optional_fields() {
+        let json = r#"{
+            "bank_name": "Bank XYZ",
+            "account_number": "00 0000 0000 0000"
+        }"#;
+        let pd: PaymentDetails = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pd.swift, None);
+        assert_eq!(pd.period, None);
+    }
+
+    #[test]
+    fn test_payment_details_missing_required_bank_name_fails() {
+        let json = r#"{"account_number": "00 0000 0000 0000"}"#;
+        let result: Result<PaymentDetails, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "expected error when bank_name is missing");
+    }
+
+    #[test]
+    fn test_payment_details_period_max_u16() {
+        let json = r#"{
+            "bank_name": "Bank",
+            "account_number": "0000",
+            "period": 65535
+        }"#;
+        let pd: PaymentDetails = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pd.period, Some(65535));
+    }
+
+    // -------------------------------------------------------------------------
+    // InvoiceData deserialization
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_invoice_data_full_deserialization() {
+        let data: InvoiceData = serde_json::from_str(full_invoice_json()).expect("should deserialize");
+        assert_eq!(data.number, Some("FV-01-01-26".to_string()));
+        assert_eq!(data.currency, "PLN");
+        assert_eq!(data.seller.nip, "1234567890");
+        assert_eq!(data.buyer.nip, "0987654321");
+        assert_eq!(data.positions.len(), 1);
+        assert!(data.payment_details.is_some());
+    }
+
+    #[test]
+    fn test_invoice_data_without_payment_details() {
+        let json = r#"{
+            "number": "FV-02-01-26",
+            "currency": "EUR",
+            "seller": {
+                "nip": "1111111111",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "A",
+                    "building_number": "1",
+                    "city": "City",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "2222222222",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "Town",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Svc", "count": "1", "price": "500.00", "tax_rate": "23"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert!(data.payment_details.is_none());
+        assert_eq!(data.currency, "EUR");
+    }
+
+    #[test]
+    fn test_invoice_data_without_number() {
+        let json = r#"{
+            "currency": "PLN",
+            "seller": {
+                "nip": "1111111111",
+                "name": "S",
+                "address": {
+                    "country_code": "PL",
+                    "street": "A",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "2222222222",
+                "name": "B",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "X", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize without number");
+        assert_eq!(data.number, None);
+    }
+
+    #[test]
+    fn test_invoice_data_multiple_positions() {
+        let json = r#"{
+            "number": "FV-99",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Item 1", "count": "1", "price": "10.00", "tax_rate": "23"},
+                {"name": "Item 2", "count": "5", "price": "2.50", "tax_rate": "8"},
+                {"name": "Item 3", "count": "10", "price": "1.00", "tax_rate": "5"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(data.positions.len(), 3);
+        assert_eq!(data.positions[0].tax_rate, TaxRate::Rate23);
+        assert_eq!(data.positions[1].tax_rate, TaxRate::Rate8);
+        assert_eq!(data.positions[2].tax_rate, TaxRate::Rate5);
+    }
+
+    #[test]
+    fn test_invoice_data_missing_currency_fails() {
+        let json = r#"{
+            "number": "FV-01",
+            "seller": {
+                "nip": "1111111111",
+                "name": "S",
+                "address": {
+                    "country_code": "PL",
+                    "street": "A",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "2222222222",
+                "name": "B",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": []
+        }"#;
+        let result: Result<InvoiceData, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "expected error when currency is missing");
+    }
+
+    // -------------------------------------------------------------------------
+    // Invoice number validation logic
+    // -------------------------------------------------------------------------
+
+    fn extract_invoice_number(number: Option<String>) -> Result<String, std::io::Error> {
+        number
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Missing required field: number",
+                )
+            })
+    }
+
+    #[test]
+    fn test_invoice_number_valid() {
+        let result = extract_invoice_number(Some("FV-01-01-26".to_string()));
+        assert_eq!(result.unwrap(), "FV-01-01-26");
+    }
+
+    #[test]
+    fn test_invoice_number_trimmed() {
+        let result = extract_invoice_number(Some("  FV-01  ".to_string()));
+        assert_eq!(result.unwrap(), "FV-01");
+    }
+
+    #[test]
+    fn test_invoice_number_none_fails() {
+        let result = extract_invoice_number(None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn test_invoice_number_empty_string_fails() {
+        let result = extract_invoice_number(Some("".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invoice_number_whitespace_only_fails() {
+        let result = extract_invoice_number(Some("   ".to_string()));
+        assert!(result.is_err(), "whitespace-only number should fail");
+    }
+
+    #[test]
+    fn test_invoice_number_tab_whitespace_only_fails() {
+        let result = extract_invoice_number(Some("\t\n ".to_string()));
+        assert!(result.is_err(), "tab/newline whitespace should fail");
+    }
+
+    #[test]
+    fn test_invoice_number_trimmed_non_empty_succeeds() {
+        // A number that has whitespace but non-empty content after trim
+        let result = extract_invoice_number(Some("\nFV-100\t".to_string()));
+        assert_eq!(result.unwrap(), "FV-100");
+    }
+
+    // -------------------------------------------------------------------------
+    // Constant PAYMENT_METHOD_BANK_TRANSFER
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_payment_method_bank_transfer_constant() {
+        assert_eq!(PAYMENT_METHOD_BANK_TRANSFER, 6u8);
+    }
+
+    // -------------------------------------------------------------------------
+    // Edge cases / regression tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_invoice_data_empty_positions_array() {
+        let json = r#"{
+            "number": "FV-EMPTY",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": []
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert!(data.positions.is_empty());
+    }
+
+    #[test]
+    fn test_invoice_data_null_number_becomes_none() {
+        let json = r#"{
+            "number": null,
+            "currency": "PLN",
+            "seller": {
+                "nip": "1111111111",
+                "name": "S",
+                "address": {
+                    "country_code": "PL",
+                    "street": "A",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "2222222222",
+                "name": "B",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": []
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(data.number, None);
+        // Validate that null number → validation error
+        let number_result = extract_invoice_number(data.number);
+        assert!(number_result.is_err(), "null number should fail validation");
+    }
+
+    #[test]
+    fn test_position_zero_price_is_valid() {
+        let json = r#"{"name": "Free Item", "count": "1", "price": "0", "tax_rate": "23"}"#;
+        let pos: Position = serde_json::from_str(json).expect("should deserialize zero price");
+        assert_eq!(pos.price.to_string(), "0");
+    }
+
+    #[test]
+    fn test_address_country_code_preserved_as_provided() {
+        // The Address struct stores country_code as a plain String (not normalized)
+        let json = r#"{
+            "country_code": "de",
+            "street": "Str",
+            "building_number": "1",
+            "city": "Berlin",
+            "postal_code": "10001"
+        }"#;
+        let addr: Address = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(addr.country_code, "de");
+    }
+
+    #[test]
+    fn test_payment_details_period_boundary_zero() {
+        let json = r#"{
+            "bank_name": "Bank",
+            "account_number": "0000",
+            "period": 0
+        }"#;
+        let pd: PaymentDetails = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(pd.period, Some(0));
+    }
+}
