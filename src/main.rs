@@ -52,6 +52,8 @@ struct InvoiceData {
     payment_details: Option<PaymentDetails>,
 }
 
+const PAYMENT_METHOD_BANK_TRANSFER: u8 = 6;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
@@ -103,19 +105,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             issue_date: now.format("%Y-%m-%d").to_string(),
             currency_code: invoice_gen::shared::models::CurrencyCode::new(invoice_data.currency),
             lines: {
-                let mut lines = Vec::default();
-                for position in invoice_data.positions {
-                    lines.push(
+                invoice_data
+                    .positions
+                    .into_iter()
+                    .map(|position| {
                         LineBuilder::new(
                             &position.name,
                             position.count,
                             position.price,
                             position.tax_rate,
                         )
-                        .build(),
-                    );
-                }
-                lines
+                        .build()
+                    })
+                    .collect()
             },
             payment: invoice_data.payment_details.map(|payment_details| Payment {
                 bank_accounts: vec![BankAccount {
@@ -141,8 +143,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             description: None,
                         }]
                     })
-                    .unwrap_or(Vec::default()),
-                payment_method: Some(6),
+                    .unwrap_or_default(),
+                payment_method: Some(PAYMENT_METHOD_BANK_TRANSFER),
                 other_payment: None,
                 payment_description: None,
                 factor_bank_accounts: Vec::default(),
