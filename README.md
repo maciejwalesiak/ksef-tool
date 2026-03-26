@@ -9,7 +9,6 @@ run: ```./target/debug/ksef-tool </path/to/invoice_data.json>```
 
 Example of invoice descriptor json:  
 
-```
 ```json
 {
   "number": "FV-01-01-26",
@@ -52,7 +51,4 @@ Example of invoice descriptor json:
     "period": 5
   }
 }
-```
-```
-```
 ```
