@@ -38,7 +38,7 @@ Example of invoice descriptor json:
   },
   "positions": [
     {
-      "name": "Usługi najlepsze",
+      "name": "Produkt najlepszy",
       "count": 16,
       "price": 19.00,
       "tax_rate": "23"
