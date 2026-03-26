@@ -67,6 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let invoice_data: InvoiceData = serde_json::from_str(&contents)?;
     // println!("{:?}", invoice_data);
 
+    let now = chrono::Local::now();
+
     let invoice = Invoice {
         header: Header {
             system_info: None,
@@ -98,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // db
                 "XX/XX/XX".to_string(),
             ),
-            issue_date: chrono::Local::now().format("%Y-%m-%d").to_string(),
+            issue_date: now.format("%Y-%m-%d").to_string(),
             currency_code: invoice_gen::shared::models::CurrencyCode::new(invoice_data.currency),
             lines: {
                 let mut lines = Vec::default();
@@ -132,7 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|period| {
                         vec![PaymentTerm {
                             date: Some(
-                                (chrono::Local::now() + chrono::TimeDelta::days(period))
+                                (now + chrono::TimeDelta::days(period))
                                     .format("%Y-%m-%d")
                                     .to_string(),
                             ),
@@ -154,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     //println!("{invoice:?}");
-    let xml = invoice.to_xml().unwrap();
+    let xml = invoice.to_xml()?;
     println!("{xml}");
 
     Ok(())
