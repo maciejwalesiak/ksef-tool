@@ -39,7 +39,7 @@ struct PaymentDetails {
     bank_name: String,
     account_number: String,
     swift: Option<String>,
-    period: Option<i64>,
+    period: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +69,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let invoice_data: InvoiceData = serde_json::from_str(&contents)?;
     // println!("{:?}", invoice_data);
 
+    // TODO: generate incremental number based on last value from given month stored in db
+    // if invoice number is not explicitly set
+    let invoice_number = invoice_data.number.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Missing required field: number",
+        )
+    })?;
     let now = chrono::Local::now();
 
     let invoice = Invoice {
@@ -97,11 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .build(),
         invoice_body: InvoiceBody {
-            invoice_number: invoice_data.number.unwrap_or(
-                // TODO: generate incremental number based on last value from given month stored in
-                // db
-                "XX/XX/XX".to_string(),
-            ),
+            invoice_number,
             issue_date: now.format("%Y-%m-%d").to_string(),
             currency_code: invoice_gen::shared::models::CurrencyCode::new(invoice_data.currency),
             lines: {
@@ -136,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|period| {
                         vec![PaymentTerm {
                             date: Some(
-                                (now + chrono::TimeDelta::days(period))
+                                (now + chrono::TimeDelta::days(i64::from(period)))
                                     .format("%Y-%m-%d")
                                     .to_string(),
                             ),
