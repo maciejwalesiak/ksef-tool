@@ -71,13 +71,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // TODO: generate incremental number based on last value from given month stored in db
     // if invoice number is not explicitly set
-    let invoice_number = invoice_data.number.ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "Missing required field: number",
-        )
-    })?;
-    let now = chrono::Local::now();
+    let invoice_number = invoice_data
+        .number
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Missing required field: number",
+            )
+        })?;
+    let issue_date = chrono::Local::now().date_naive();
 
     let invoice = Invoice {
         header: Header {
@@ -106,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build(),
         invoice_body: InvoiceBody {
             invoice_number,
-            issue_date: now.format("%Y-%m-%d").to_string(),
+            issue_date: issue_date.format("%Y-%m-%d").to_string(),
             currency_code: invoice_gen::shared::models::CurrencyCode::new(invoice_data.currency),
             lines: {
                 invoice_data
@@ -140,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|period| {
                         vec![PaymentTerm {
                             date: Some(
-                                (now + chrono::TimeDelta::days(i64::from(period)))
+                                (issue_date + chrono::TimeDelta::days(i64::from(period)))
                                     .format("%Y-%m-%d")
                                     .to_string(),
                             ),
