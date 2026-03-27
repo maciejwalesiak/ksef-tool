@@ -284,7 +284,10 @@ mod tests {
             "postal_code": "80-001"
         }"#;
         let result: Result<Address, _> = serde_json::from_str(json);
-        assert!(result.is_err(), "expected error when required field is missing");
+        assert!(
+            result.is_err(),
+            "expected error when required field is missing"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -434,7 +437,8 @@ mod tests {
 
     #[test]
     fn test_invoice_data_full_deserialization() {
-        let data: InvoiceData = serde_json::from_str(full_invoice_json()).expect("should deserialize");
+        let data: InvoiceData =
+            serde_json::from_str(full_invoice_json()).expect("should deserialize");
         assert_eq!(data.number, Some("FV-01-01-26".to_string()));
         assert_eq!(data.currency, "PLN");
         assert_eq!(data.seller.nip, "1234567890");
@@ -509,7 +513,8 @@ mod tests {
                 {"name": "X", "count": "1", "price": "10.00", "tax_rate": "23"}
             ]
         }"#;
-        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize without number");
+        let data: InvoiceData =
+            serde_json::from_str(json).expect("should deserialize without number");
         assert_eq!(data.number, None);
     }
 
