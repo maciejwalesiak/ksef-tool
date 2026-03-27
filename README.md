@@ -1,5 +1,5 @@
 # ksef-tool
-A tool for generating ksef invoice FA (3) xml file based on input invoice descriptor json.
+CLI tool to generate KSeF FA(3) invoice XML from a JSON invoice descriptor; supports seller/buyer data, line items, currency, optional payment details and payment-term days; outputs XML to stdout.
 
 requirements: rust development environment and tools installed, including cargo
 
