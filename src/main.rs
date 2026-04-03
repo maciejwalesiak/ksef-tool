@@ -559,7 +559,7 @@ mod tests {
         let data: InvoiceData =
             serde_json::from_str(full_invoice_json()).expect("should deserialize");
         assert_eq!(data.number, Some("FV-01-01-26".to_string()));
-        assert_eq!(data.currency, "PLN");
+        assert_eq!(data.currency, CurrencyCode::new("PLN"));
         assert_eq!(data.seller.nip, "1234567890");
         assert_eq!(data.buyer.nip, "0987654321");
         assert_eq!(data.positions.len(), 1);
@@ -599,7 +599,7 @@ mod tests {
         }"#;
         let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
         assert!(data.payment_details.is_none());
-        assert_eq!(data.currency, "EUR");
+        assert_eq!(data.currency, CurrencyCode::new("EUR"));
     }
 
     #[test]
