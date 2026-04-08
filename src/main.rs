@@ -96,7 +96,7 @@ fn get_currency_exchange_rate(
     currency_code: &CurrencyCode,
 ) -> Result<Decimal, CurrencyExchangeRateError> {
     let url = format!(
-        "http://api.nbp.pl/api/exchangerates/rates/A/{}/last/1/?format=json",
+        "https://api.nbp.pl/api/exchangerates/rates/A/{}/last/1/?format=json",
         currency_code,
     );
 
