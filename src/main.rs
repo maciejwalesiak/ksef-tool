@@ -92,6 +92,26 @@ enum CurrencyExchangeRateError {
     InvalidRate(CurrencyCode),
 }
 
+/// Fetches the mid exchange rate for `currency_code` from the NBP API and returns it rounded to 4 decimal places.
+///
+/// The function queries the NBP exchangerates endpoint, parses the first returned `mid` rate, converts it to `Decimal`,
+/// and rounds it to four decimal places using midpoint-away-from-zero rounding.
+///
+/// # Returns
+///
+/// `Ok(Decimal)` containing the mid exchange rate rounded to 4 decimal places, or `Err(CurrencyExchangeRateError)` if the HTTP request or JSON parsing fails, if no rate is present for the currency, or if the parsed rate is invalid (zero).
+///
+/// # Examples
+///
+/// ```no_run
+/// use rust_decimal::Decimal;
+/// // Assume `CurrencyCode::new("USD")` constructs a CurrencyCode; adapt to your crate's API as needed.
+/// let code = CurrencyCode::new("USD");
+/// match get_currency_exchange_rate(&code) {
+///     Ok(rate) => println!("Rate: {}", rate), // rate is a Decimal rounded to 4 dp
+///     Err(e) => eprintln!("Failed to fetch rate: {}", e),
+/// }
+/// ```
 fn get_currency_exchange_rate(
     currency_code: &CurrencyCode,
 ) -> Result<Decimal, CurrencyExchangeRateError> {
@@ -130,6 +150,25 @@ fn get_currency_exchange_rate(
     rate
 }
 
+/// Reads invoice data from a JSON file path given as the sole command-line argument, constructs an Invoice
+/// (including optional currency exchange rate lookup for non-PLN currencies and reverse-charge handling),
+/// serializes the invoice to XML, and prints the XML to stdout.
+///
+/// The program expects exactly one argument: the path to a JSON file containing `InvoiceData`.
+/// If the argument is missing or invalid invoice data is encountered (for example missing invoice number,
+/// I/O errors, JSON deserialization errors, exchange-rate fetch failures, or XML serialization errors),
+/// the function returns an error or exits with code 1 when the argument count is incorrect.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Run the compiled binary with a path to an invoice JSON file:
+/// // cargo run -- /path/to/invoice_data.json
+/// ```
+///
+/// Returns:
+/// - `Ok(())` on successful processing and printing of the generated XML.
+/// - `Err(...)` if any I/O, deserialization, exchange-rate retrieval, or XML serialization error occurs.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
