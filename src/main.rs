@@ -1,4 +1,3 @@
-use chrono::prelude::*;
 use core::result::Result;
 use invoice_gen::{
     fa_3::{
@@ -12,7 +11,7 @@ use invoice_gen::{
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use std::{env, fs::File, io::Read};
+use std::{env, fs::File, io::Read, time::Duration};
 use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
@@ -94,28 +93,28 @@ enum CurrencyExchangeRateError {
 }
 
 fn get_currency_exchange_rate(
-    now: chrono::NaiveDate,
     currency_code: &CurrencyCode,
 ) -> Result<Decimal, CurrencyExchangeRateError> {
-    let mut prev_day = now - chrono::Duration::days(1);
-    while prev_day.weekday() == chrono::Weekday::Sat || prev_day.weekday() == Weekday::Sun {
-        prev_day -= chrono::Duration::days(1);
-    }
-
-    let date_str = prev_day.format("%Y-%m-%d").to_string();
-
     let url = format!(
-        "http://api.nbp.pl/api/exchangerates/rates/A/{}/{}/?format=json",
-        currency_code, date_str
+        "http://api.nbp.pl/api/exchangerates/rates/A/{}/last/1/?format=json",
+        currency_code,
     );
 
-    let response: NbpResponse = reqwest::blocking::get(&url)?.json()?;
+    let response: NbpResponse = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?
+        .get(url)
+        .send()?
+        .json()?;
 
-    // TODO: round rate to 4 digit precision, so that it passes ksef xml validation
     let rate = response
         .rates
         .first()
-        .map(|rate| Decimal::from_f64_retain(rate.mid).unwrap_or(Decimal::ZERO))
+        .map(|rate| {
+            Decimal::from_f64_retain(rate.mid)
+                .unwrap_or(Decimal::ZERO)
+                .round_dp_with_strategy(4, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+        })
         .ok_or(CurrencyExchangeRateError::RateMissing(
             currency_code.clone(),
         ));
@@ -158,10 +157,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Missing required field: number",
             )
         })?;
-    let now = chrono::Local::now().date_naive();
     let currency_code = invoice_data.currency;
     let currency_rate = if currency_code.as_str() != "PLN" {
-        let rate = get_currency_exchange_rate(now, &currency_code)?;
+        let rate = get_currency_exchange_rate(&currency_code)?;
         Some(rate)
     } else {
         None
@@ -178,6 +176,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (None, None, REVERSE_CHARGE_UNSET)
         };
 
+    let now = chrono::Local::now().date_naive();
     let invoice = Invoice {
         header: Header {
             system_info: None,
