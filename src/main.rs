@@ -227,9 +227,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .positions
                     .into_iter()
                     .map(|position| InvoiceLine {
-                        //TODO: total position value should
-                        //serialize to P_13_8 for reverse_charge (Oo tax rate), now it is
-                        //serializing to P_13_1 (23% tax) which does not pass ksef validation
                         currency_rate,
                         ..LineBuilder::new(
                             &position.name,
