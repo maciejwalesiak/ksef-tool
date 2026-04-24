@@ -1,17 +1,22 @@
+use core::result::Result;
 use invoice_gen::{
     fa_3::{
         builder::{BuyerBuilder, LineBuilder, SellerBuilder},
-        models::{BankAccount, Header, Invoice, InvoiceBody, Payment, PaymentTerm},
+        models::{
+            Annotations, BankAccount, Header, IdentificationData2, Invoice, InvoiceBody,
+            InvoiceLine, Payment, PaymentTerm, Subject1, Subject2,
+        },
     },
-    shared::TaxRate,
+    shared::{CountryCode, CurrencyCode, TaxRate},
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
-use std::{env, fs::File, io::Read};
+use std::{env, fs::File, io::Read, time::Duration};
+use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
 struct Address {
-    country_code: String,
+    country_code: CountryCode,
     street: String,
     building_number: String,
     flat_number: Option<String>,
@@ -45,15 +50,125 @@ struct PaymentDetails {
 #[derive(Debug, Deserialize)]
 struct InvoiceData {
     number: Option<String>,
-    currency: String,
+    currency: CurrencyCode,
     seller: Subject,
     buyer: Subject,
     positions: Vec<Position>,
     payment_details: Option<PaymentDetails>,
 }
 
-const PAYMENT_METHOD_BANK_TRANSFER: u8 = 6;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NbpRate {
+    #[allow(dead_code)]
+    no: String,
+    #[allow(dead_code)]
+    effective_date: String,
+    mid: f64,
+}
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NbpResponse {
+    #[allow(dead_code)]
+    table: String,
+    #[allow(dead_code)]
+    currency: String,
+    #[allow(dead_code)]
+    code: String,
+    rates: Vec<NbpRate>,
+}
+const PAYMENT_METHOD_BANK_TRANSFER: u8 = 6;
+const REVERSE_CHARGE_SET: u8 = 1;
+const REVERSE_CHARGE_UNSET: u8 = 2;
+
+#[derive(Debug, Error)]
+enum CurrencyExchangeRateError {
+    #[error("currency exchange rate request error")]
+    RequestError(#[from] reqwest::Error),
+    #[error("{0} currency exchange rate is missing")]
+    RateMissing(CurrencyCode),
+    #[error("{0} currency exchange rate value is invalid")]
+    InvalidRate(CurrencyCode),
+}
+
+/// Fetches the mid exchange rate for `currency_code` from the NBP API and returns it rounded to 4 decimal places.
+///
+/// The function queries the NBP exchangerates endpoint, parses the first returned `mid` rate, converts it to `Decimal`,
+/// and rounds it to four decimal places using midpoint-away-from-zero rounding.
+///
+/// # Returns
+///
+/// `Ok(Decimal)` containing the mid exchange rate rounded to 4 decimal places, or `Err(CurrencyExchangeRateError)` if the HTTP request or JSON parsing fails, if no rate is present for the currency, or if the parsed rate is invalid (zero).
+///
+/// # Examples
+///
+/// ```no_run
+/// use rust_decimal::Decimal;
+/// // Assume `CurrencyCode::new("USD")` constructs a CurrencyCode; adapt to your crate's API as needed.
+/// let code = CurrencyCode::new("USD");
+/// match get_currency_exchange_rate(&code) {
+///     Ok(rate) => println!("Rate: {}", rate), // rate is a Decimal rounded to 4 dp
+///     Err(e) => eprintln!("Failed to fetch rate: {}", e),
+/// }
+/// ```
+fn get_currency_exchange_rate(
+    currency_code: &CurrencyCode,
+) -> Result<Decimal, CurrencyExchangeRateError> {
+    let url = format!(
+        "https://api.nbp.pl/api/exchangerates/rates/A/{}/last/1/?format=json",
+        currency_code,
+    );
+
+    let response: NbpResponse = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?
+        .get(url)
+        .send()?
+        .json()?;
+
+    let rate = response
+        .rates
+        .first()
+        .map(|rate| {
+            Decimal::from_f64_retain(rate.mid)
+                .unwrap_or(Decimal::ZERO)
+                .round_dp_with_strategy(4, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
+        })
+        .ok_or(CurrencyExchangeRateError::RateMissing(
+            currency_code.clone(),
+        ));
+
+    if let Ok(rate) = rate
+        && rate == Decimal::ZERO
+    {
+        return Err(CurrencyExchangeRateError::InvalidRate(
+            currency_code.clone(),
+        ));
+    }
+
+    rate
+}
+
+/// Reads invoice data from a JSON file path given as the sole command-line argument, constructs an Invoice
+/// (including optional currency exchange rate lookup for non-PLN currencies and reverse-charge handling),
+/// serializes the invoice to XML, and prints the XML to stdout.
+///
+/// The program expects exactly one argument: the path to a JSON file containing `InvoiceData`.
+/// If the argument is missing or invalid invoice data is encountered (for example missing invoice number,
+/// I/O errors, JSON deserialization errors, exchange-rate fetch failures, or XML serialization errors),
+/// the function returns an error or exits with code 1 when the argument count is incorrect.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Run the compiled binary with a path to an invoice JSON file:
+/// // cargo run -- /path/to/invoice_data.json
+/// ```
+///
+/// Returns:
+/// - `Ok(())` on successful processing and printing of the generated XML.
+/// - `Err(...)` if any I/O, deserialization, exchange-rate retrieval, or XML serialization error occurs.
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
@@ -81,43 +196,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Missing required field: number",
             )
         })?;
-    let issue_date = chrono::Local::now().date_naive();
+    let currency_code = invoice_data.currency;
+    let currency_rate = if currency_code.as_str() != "PLN" {
+        let rate = get_currency_exchange_rate(&currency_code)?;
+        Some(rate)
+    } else {
+        None
+    };
 
+    let (buyer_eu_code, buyer_eu_vat_no, reverse_charge) =
+        if invoice_data.buyer.address.country_code.as_str() != "PL" {
+            (
+                Some(invoice_data.buyer.address.country_code.as_str().to_string()),
+                Some(invoice_data.buyer.nip.clone()),
+                REVERSE_CHARGE_SET,
+            )
+        } else {
+            (None, None, REVERSE_CHARGE_UNSET)
+        };
+
+    let now = chrono::Local::now().date_naive();
     let invoice = Invoice {
         header: Header {
             system_info: None,
             ..Default::default()
         },
-        subject1: SellerBuilder::new(&invoice_data.seller.nip, &invoice_data.seller.name)
-            .set_address(
-                &invoice_data.seller.address.country_code,
-                &invoice_data.seller.address.street,
-                &invoice_data.seller.address.building_number,
-                invoice_data.seller.address.flat_number.as_deref(),
-                &invoice_data.seller.address.city,
-                &invoice_data.seller.address.postal_code,
-            )
-            .build(),
-        subject2: BuyerBuilder::new(&invoice_data.buyer.nip, &invoice_data.buyer.name)
-            .set_address(
-                &invoice_data.buyer.address.country_code,
-                &invoice_data.buyer.address.street,
-                &invoice_data.buyer.address.building_number,
-                invoice_data.buyer.address.flat_number.as_deref(),
-                &invoice_data.buyer.address.city,
-                &invoice_data.buyer.address.postal_code,
-            )
-            .build(),
+        subject1: Subject1 {
+            taxpayer_prefix: buyer_eu_code.is_some().then_some(
+                invoice_data
+                    .seller
+                    .address
+                    .country_code
+                    .as_str()
+                    .to_string(),
+            ),
+            ..SellerBuilder::new(&invoice_data.seller.nip, &invoice_data.seller.name)
+                .set_address(
+                    invoice_data.seller.address.country_code.as_str(),
+                    &invoice_data.seller.address.street,
+                    &invoice_data.seller.address.building_number,
+                    invoice_data.seller.address.flat_number.as_deref(),
+                    &invoice_data.seller.address.city,
+                    &invoice_data.seller.address.postal_code,
+                )
+                .build()
+        },
+        subject2: Subject2 {
+            identification_data: Some(IdentificationData2 {
+                name: Some(invoice_data.buyer.name.clone()),
+                nip: buyer_eu_vat_no
+                    .is_none()
+                    .then_some(invoice_data.buyer.nip.clone()),
+                eu_code: buyer_eu_code,
+                eu_vat_number: buyer_eu_vat_no,
+                ..Default::default()
+            }),
+            ..BuyerBuilder::new(&invoice_data.buyer.nip, &invoice_data.buyer.name)
+                .set_address(
+                    invoice_data.buyer.address.country_code.as_str(),
+                    &invoice_data.buyer.address.street,
+                    &invoice_data.buyer.address.building_number,
+                    invoice_data.buyer.address.flat_number.as_deref(),
+                    &invoice_data.buyer.address.city,
+                    &invoice_data.buyer.address.postal_code,
+                )
+                .build()
+        },
         invoice_body: InvoiceBody {
             invoice_number,
-            issue_date: issue_date.format("%Y-%m-%d").to_string(),
-            currency_code: invoice_gen::shared::models::CurrencyCode::new(invoice_data.currency),
+            issue_date: now.format("%Y-%m-%d").to_string(),
+            currency_code,
             lines: {
                 invoice_data
                     .positions
                     .into_iter()
-                    .map(|position| {
-                        LineBuilder::new(
+                    .map(|position| InvoiceLine {
+                        currency_rate,
+                        ..LineBuilder::new(
                             &position.name,
                             position.count,
                             position.price,
@@ -144,7 +299,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|period| {
                         vec![PaymentTerm {
                             date: Some(
-                                (issue_date + chrono::TimeDelta::days(i64::from(period)))
+                                (now + chrono::TimeDelta::days(i64::from(period)))
                                     .format("%Y-%m-%d")
                                     .to_string(),
                             ),
@@ -160,6 +315,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 payment_link: None,
                 ip_ksef: None,
             }),
+            annotations: Annotations {
+                reverse_charge,
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
@@ -238,7 +397,7 @@ mod tests {
             "postal_code": "00-001"
         }"#;
         let addr: Address = serde_json::from_str(json).expect("should deserialize");
-        assert_eq!(addr.country_code, "PL");
+        assert_eq!(addr.country_code.as_str(), "PL");
         assert_eq!(addr.street, "Ulica");
         assert_eq!(addr.building_number, "5");
         assert_eq!(addr.flat_number, Some("3A".to_string()));
@@ -440,7 +599,7 @@ mod tests {
         let data: InvoiceData =
             serde_json::from_str(full_invoice_json()).expect("should deserialize");
         assert_eq!(data.number, Some("FV-01-01-26".to_string()));
-        assert_eq!(data.currency, "PLN");
+        assert_eq!(data.currency, CurrencyCode::new("PLN"));
         assert_eq!(data.seller.nip, "1234567890");
         assert_eq!(data.buyer.nip, "0987654321");
         assert_eq!(data.positions.len(), 1);
@@ -480,7 +639,7 @@ mod tests {
         }"#;
         let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
         assert!(data.payment_details.is_none());
-        assert_eq!(data.currency, "EUR");
+        assert_eq!(data.currency, CurrencyCode::new("EUR"));
     }
 
     #[test]
@@ -751,7 +910,7 @@ mod tests {
             "postal_code": "10001"
         }"#;
         let addr: Address = serde_json::from_str(json).expect("should deserialize");
-        assert_eq!(addr.country_code, "de");
+        assert_eq!(addr.country_code.as_str(), "de");
     }
 
     #[test]
