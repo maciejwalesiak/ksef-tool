@@ -7,7 +7,7 @@ use invoice_gen::{
             InvoiceLine, Payment, PaymentTerm, Subject1, Subject2,
         },
     },
-    shared::{CurrencyCode, TaxRate},
+    shared::{CountryCode, CurrencyCode, TaxRate},
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -16,7 +16,7 @@ use thiserror::Error;
 
 #[derive(Debug, Deserialize)]
 struct Address {
-    country_code: String,
+    country_code: CountryCode,
     street: String,
     building_number: String,
     flat_number: Option<String>,
@@ -205,9 +205,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let (buyer_eu_code, buyer_eu_vat_no, reverse_charge) =
-        if invoice_data.buyer.address.country_code != "PL" {
+        if invoice_data.buyer.address.country_code.as_str() != "PL" {
             (
-                Some(invoice_data.buyer.address.country_code.clone()),
+                Some(invoice_data.buyer.address.country_code.as_str().to_string()),
                 Some(invoice_data.buyer.nip.clone()),
                 REVERSE_CHARGE_SET,
             )
@@ -222,12 +222,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
         subject1: Subject1 {
-            taxpayer_prefix: buyer_eu_code
-                .is_some()
-                .then_some(invoice_data.seller.address.country_code.clone()),
+            taxpayer_prefix: buyer_eu_code.is_some().then_some(
+                invoice_data
+                    .seller
+                    .address
+                    .country_code
+                    .as_str()
+                    .to_string(),
+            ),
             ..SellerBuilder::new(&invoice_data.seller.nip, &invoice_data.seller.name)
                 .set_address(
-                    &invoice_data.seller.address.country_code,
+                    invoice_data.seller.address.country_code.as_str(),
                     &invoice_data.seller.address.street,
                     &invoice_data.seller.address.building_number,
                     invoice_data.seller.address.flat_number.as_deref(),
@@ -248,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
             ..BuyerBuilder::new(&invoice_data.buyer.nip, &invoice_data.buyer.name)
                 .set_address(
-                    &invoice_data.buyer.address.country_code,
+                    invoice_data.buyer.address.country_code.as_str(),
                     &invoice_data.buyer.address.street,
                     &invoice_data.buyer.address.building_number,
                     invoice_data.buyer.address.flat_number.as_deref(),
@@ -392,7 +397,7 @@ mod tests {
             "postal_code": "00-001"
         }"#;
         let addr: Address = serde_json::from_str(json).expect("should deserialize");
-        assert_eq!(addr.country_code, "PL");
+        assert_eq!(addr.country_code.as_str(), "PL");
         assert_eq!(addr.street, "Ulica");
         assert_eq!(addr.building_number, "5");
         assert_eq!(addr.flat_number, Some("3A".to_string()));
@@ -905,7 +910,7 @@ mod tests {
             "postal_code": "10001"
         }"#;
         let addr: Address = serde_json::from_str(json).expect("should deserialize");
-        assert_eq!(addr.country_code, "de");
+        assert_eq!(addr.country_code.as_str(), "de");
     }
 
     #[test]
