@@ -1008,4 +1008,82 @@ mod tests {
         let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
         assert!(validation::validate_invoice_data(&data).is_ok());
     }
+
+    #[test]
+    fn test_validation_allows_non_pl_seller_nip_of_different_length() {
+        let json = r#"{
+            "number": "FV-INT",
+            "currency": "PLN",
+            "seller": {
+                "nip": "ABC123",
+                "name": "Intl Seller",
+                "address": {
+                    "country_code": "DE",
+                    "street": "Some Str",
+                    "building_number": "9",
+                    "city": "Berlin",
+                    "postal_code": "10115"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Item", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        // seller NIP is required but non-PL NIP length is not enforced
+        assert!(validation::validate_invoice_data(&data).is_ok());
+    }
+
+    #[test]
+    fn test_validation_rejects_invalid_swift_and_empty_account_number() {
+        let json = r#"{
+            "number": "FV-ERR",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Item", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ],
+            "payment_details": {
+                "bank_name": "Bank",
+                "account_number": "",
+                "swift": "BAD-SW!FT",
+                "period": 10
+            }
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        // empty account_number and invalid SWIFT should fail validation
+        assert!(validation::validate_invoice_data(&data).is_err());
+    }
 }

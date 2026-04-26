@@ -67,8 +67,10 @@ ksef-tool performs post-deserialization validation of the input JSON and will fa
 
 Example validation error output (stderr):
 
+```
 Validation error at positions: positions array must contain at least one position
 Validation error at seller.nip: PL NIP must contain 10 digits
+```
 
 Configuration
 

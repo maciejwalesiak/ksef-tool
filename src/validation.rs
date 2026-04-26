@@ -19,8 +19,15 @@ fn add_err(errors: &mut ValidationErrors, path: impl Into<String>, message: impl
 pub fn validate_invoice_data(data: &super::InvoiceData) -> Result<(), ValidationErrors> {
     let mut errors: ValidationErrors = Vec::new();
 
-    // number: if present, must not be empty when trimmed
-    if data.number.as_ref().map(|s| s.trim().is_empty()).unwrap_or(false) {
+    // number: must be present and not empty when trimmed
+    if data.number.is_none() {
+        add_err(&mut errors, "number", "invoice number is missing");
+    } else if data
+        .number
+        .as_ref()
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(false)
+    {
         add_err(&mut errors, "number", "invoice number is empty");
     }
 
@@ -29,78 +36,66 @@ pub fn validate_invoice_data(data: &super::InvoiceData) -> Result<(), Validation
         add_err(&mut errors, "currency", "invalid currency code length");
     }
 
-    // Seller and buyer
-    for (which, subj) in [("seller", &data.seller), ("buyer", &data.buyer)] {
-        if which == "seller" {
-            if subj.nip.trim().is_empty() {
-                add_err(&mut errors, format!("{}.nip", which), "nip is empty");
-            } else if subj.address.country_code.as_str() == "PL" {
-                // For PL require 10 digits
-                let digits: String = subj.nip.chars().filter(|c| c.is_ascii_digit()).collect();
-                if digits.len() != 10 {
-                    add_err(
-                        &mut errors,
-                        format!("{}.nip", which),
-                        "PL NIP must contain 10 digits",
-                    );
-                }
-            }
-        } else {
-            // buyer: optional nip; if present and PL, validate digits
-            if !subj.nip.trim().is_empty() && subj.address.country_code.as_str() == "PL" {
-                let digits: String = subj.nip.chars().filter(|c| c.is_ascii_digit()).collect();
-                if digits.len() != 10 {
-                    add_err(
-                        &mut errors,
-                        format!("{}.nip", which),
-                        "PL NIP must contain 10 digits",
-                    );
-                }
+    // Seller and buyer: use helper to avoid duplicating PL-NIP logic
+    fn validate_subject(
+        subj: &super::Subject,
+        key: &str,
+        is_seller: bool,
+        errors: &mut ValidationErrors,
+    ) {
+        // NIP rules: seller NIP is required; buyer NIP optional
+        if is_seller && subj.nip.trim().is_empty() {
+            add_err(errors, format!("{}.nip", key), "nip is empty");
+        }
+        // If NIP present and country_code == "PL", validate 10 digits
+        if !subj.nip.trim().is_empty() && subj.address.country_code.as_str() == "PL" {
+            let digits: String = subj.nip.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.len() != 10 {
+                add_err(
+                    errors,
+                    format!("{}.nip", key),
+                    "PL NIP must contain 10 digits",
+                );
             }
         }
 
         if subj.name.trim().is_empty() {
-            add_err(&mut errors, format!("{}.name", which), "name is empty");
+            add_err(errors, format!("{}.name", key), "name is empty");
         }
 
         // Address fields presence
         let addr = &subj.address;
         if addr.country_code.as_str().len() != 2 {
             add_err(
-                &mut errors,
-                format!("{}.address.country_code", which),
+                errors,
+                format!("{}.address.country_code", key),
                 "country_code must be two letters",
             );
         }
         if addr.street.trim().is_empty() {
-            add_err(
-                &mut errors,
-                format!("{}.address.street", which),
-                "street is empty",
-            );
+            add_err(errors, format!("{}.address.street", key), "street is empty");
         }
         if addr.building_number.trim().is_empty() {
             add_err(
-                &mut errors,
-                format!("{}.address.building_number", which),
+                errors,
+                format!("{}.address.building_number", key),
                 "building_number is empty",
             );
         }
         if addr.city.trim().is_empty() {
-            add_err(
-                &mut errors,
-                format!("{}.address.city", which),
-                "city is empty",
-            );
+            add_err(errors, format!("{}.address.city", key), "city is empty");
         }
         if addr.postal_code.trim().is_empty() {
             add_err(
-                &mut errors,
-                format!("{}.address.postal_code", which),
+                errors,
+                format!("{}.address.postal_code", key),
                 "postal_code is empty",
             );
         }
     }
+
+    validate_subject(&data.seller, "seller", true, &mut errors);
+    validate_subject(&data.buyer, "buyer", false, &mut errors);
 
     // Positions: require at least one
     if data.positions.is_empty() {
