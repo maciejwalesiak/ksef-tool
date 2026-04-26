@@ -82,6 +82,8 @@ const PAYMENT_METHOD_BANK_TRANSFER: u8 = 6;
 const REVERSE_CHARGE_SET: u8 = 1;
 const REVERSE_CHARGE_UNSET: u8 = 2;
 
+mod validation;
+
 #[derive(Debug, Error)]
 enum CurrencyExchangeRateError {
     #[error("currency exchange rate request error")]
@@ -183,6 +185,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let invoice_data: InvoiceData = serde_json::from_str(&contents)?;
     // println!("{:?}", invoice_data);
+
+    // Validate the invoice data for required fields and business rules before building the Invoice
+    if let Err(errors) = validation::validate_invoice_data(&invoice_data) {
+        for err in errors {
+            eprintln!("Validation error at {}: {}", err.path, err.message);
+        }
+        std::process::exit(1);
+    }
 
     // TODO: generate incremental number based on last value from given month stored in db
     // if invoice number is not explicitly set
@@ -922,5 +932,80 @@ mod tests {
         }"#;
         let pd: PaymentDetails = serde_json::from_str(json).expect("should deserialize");
         assert_eq!(pd.period, Some(0));
+    }
+
+    #[test]
+    fn test_validation_accepts_full_invoice() {
+        let data: InvoiceData =
+            serde_json::from_str(full_invoice_json()).expect("should deserialize");
+        assert!(validation::validate_invoice_data(&data).is_ok());
+    }
+
+    #[test]
+    fn test_validation_rejects_empty_positions() {
+        let json = r#"{
+            "number": "FV-EMPTY",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "0987654321",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": []
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert!(validation::validate_invoice_data(&data).is_err());
+    }
+
+    #[test]
+    fn test_validation_allows_buyer_empty_nip() {
+        let json = r#"{
+            "number": "FV-01",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Item", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert!(validation::validate_invoice_data(&data).is_ok());
     }
 }

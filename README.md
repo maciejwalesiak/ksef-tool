@@ -52,3 +52,24 @@ Example of invoice descriptor json:
   }
 }
 ```
+
+Validation
+
+ksef-tool performs post-deserialization validation of the input JSON and will fail with a non-zero exit code if violations are found. Validation focuses on presence, basic formats and cross-field business rules. Typical rules:
+
+- number: optional when deserializing, but main requires a non-empty trimmed invoice number before generating XML.
+- currency: must be a 3-letter currency code (e.g., PLN, EUR). Non-PL currencies trigger an exchange-rate lookup at runtime.
+- seller: nip required; if seller.address.country_code == "PL" seller.nip must contain 10 digits.
+- buyer: nip is optional; if present and country_code == "PL" it must contain 10 digits.
+- address: country_code (2 letters), street, building_number, city, postal_code must be present (postal_code format is not enforced by default).
+- positions: must contain at least one position; each position requires name, count > 0 and price >= 0; tax_rate must be one of supported tags (parsed by the existing TaxRate enum).
+- payment_details (optional): account_number required when present; swift must be 8 or 11 alphanumeric characters if provided; period is an unsigned 16-bit value.
+
+Example validation error output (stderr):
+
+Validation error at positions: positions array must contain at least one position
+Validation error at seller.nip: PL NIP must contain 10 digits
+
+Configuration
+
+Future work may add toggles for stricter, country-specific validations (e.g., postal code regex for PL). Current behavior keeps validation conservative to avoid rejecting valid international inputs.
