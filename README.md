@@ -1,7 +1,12 @@
 # ksef-tool
 CLI tool to generate KSeF FA(3) invoice XML from a JSON invoice descriptor; supports seller/buyer data, line items, currency, optional payment details and payment-term days; outputs XML to stdout.
 
-requirements: rust development environment and tools installed, including cargo
+requirements: rust development environment and tools installed, including cargo. Before committing changes, ensure code is formatted and lint-free by running:
+
+- cargo fmt --all -- --check
+- cargo clippy -- -D warnings
+
+Both commands must pass without errors or warnings.
 
 build: ```cargo build```
 

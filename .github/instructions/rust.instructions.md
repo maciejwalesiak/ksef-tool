@@ -1,0 +1,1 @@
+/home/walles/code/awesome-copilot/instructions/rust.instructions.md
