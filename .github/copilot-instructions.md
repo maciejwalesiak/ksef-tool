@@ -8,7 +8,11 @@
 - Run a single test: `cargo test test_name` (example: `cargo test test_address_deserialize_with_flat_number`)
 - CI: GitHub Actions runs `cargo build --verbose` and `cargo test --verbose` (.github/workflows/rust.yml)
 
-> Note: repository does not include a custom lint script; common Rust checks are available: `cargo fmt -- --check` and `cargo clippy`.
+> Note: repository does not include a custom lint script; before committing changes run formatting and lints:
+> - `cargo fmt --all -- --check`
+> - `cargo clippy -- -D warnings`
+> 
+> Both commands must pass without errors or warnings. The repository CI enforces these checks.
 
 ## High-level architecture
 - Single binary crate; entry point: `src/main.rs`.
