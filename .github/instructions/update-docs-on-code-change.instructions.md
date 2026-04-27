@@ -1,1 +1,0 @@
-/home/walles/code/awesome-copilot/instructions/update-docs-on-code-change.instructions.md
