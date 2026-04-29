@@ -25,4 +25,6 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
+      env:
+        RUST_LOG: error
       run: cargo test --verbose

@@ -9,6 +9,7 @@ use invoice_gen::{
     },
     shared::{CountryCode, CurrencyCode, TaxRate},
 };
+use log::error;
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::{env, fs::File, io::Read, time::Duration};
@@ -89,9 +90,23 @@ enum CurrencyExchangeRateError {
     #[error("currency exchange rate request error")]
     RequestError(#[from] reqwest::Error),
     #[error("{0} currency exchange rate is missing")]
-    RateMissing(CurrencyCode),
+    RateMissing(String),
     #[error("{0} currency exchange rate value is invalid")]
-    InvalidRate(CurrencyCode),
+    InvalidRate(String),
+}
+
+#[derive(Debug, Error)]
+enum ToolError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("currency exchange error: {0}")]
+    CurrencyExchange(#[from] CurrencyExchangeRateError),
+    #[error("validation errors: {0}")]
+    Validation(validation::ValidationErrors),
+    #[error("invoice generation error: {0}")]
+    InvoiceGen(String),
 }
 
 /// Fetches the mid exchange rate for `currency_code` from the NBP API and returns it rounded to 4 decimal places.
@@ -114,42 +129,78 @@ enum CurrencyExchangeRateError {
 ///     Err(e) => eprintln!("Failed to fetch rate: {}", e),
 /// }
 /// ```
+fn get_currency_exchange_rate_with_base(
+    client: &reqwest::blocking::Client,
+    currency_code: &CurrencyCode,
+    base: &str,
+) -> Result<Decimal, CurrencyExchangeRateError> {
+    const MAX_RETRIES: u32 = 3;
+    const BACKOFF_BASE_MS: u64 = 200;
+
+    let url = format!(
+        "{}/api/exchangerates/rates/A/{}/last/1/?format=json",
+        base, currency_code,
+    );
+
+    let mut last_err: Option<reqwest::Error> = None;
+
+    for attempt in 0..MAX_RETRIES {
+        match client.get(&url).send() {
+            Ok(resp) => match resp.json::<NbpResponse>() {
+                Ok(response) => {
+                    let mid = response.rates.first().map(|r| r.mid).ok_or(
+                        CurrencyExchangeRateError::RateMissing(currency_code.as_str().to_string()),
+                    )?;
+
+                    // from_f64_retain returns Option<Decimal> when NaN/Inf; treat as invalid
+                    let dec = Decimal::from_f64_retain(mid).ok_or(
+                        CurrencyExchangeRateError::InvalidRate(currency_code.as_str().to_string()),
+                    )?;
+
+                    let dec = dec.round_dp_with_strategy(
+                        4,
+                        rust_decimal::RoundingStrategy::MidpointAwayFromZero,
+                    );
+
+                    if dec == Decimal::ZERO {
+                        return Err(CurrencyExchangeRateError::InvalidRate(
+                            currency_code.as_str().to_string(),
+                        ));
+                    }
+
+                    return Ok(dec);
+                }
+                Err(e) => last_err = Some(e),
+            },
+            Err(e) => last_err = Some(e),
+        }
+
+        if attempt + 1 < MAX_RETRIES {
+            let backoff_ms = BACKOFF_BASE_MS * (1u64 << attempt);
+            std::thread::sleep(Duration::from_millis(backoff_ms));
+        }
+    }
+
+    Err(CurrencyExchangeRateError::RequestError(
+        last_err.expect("request failed and no error captured"),
+    ))
+}
+
+fn get_currency_exchange_rate_with_client(
+    client: &reqwest::blocking::Client,
+    currency_code: &CurrencyCode,
+) -> Result<Decimal, CurrencyExchangeRateError> {
+    let base = std::env::var("NBP_API_BASE").unwrap_or_else(|_| "https://api.nbp.pl".to_string());
+    get_currency_exchange_rate_with_base(client, currency_code, &base)
+}
+
 fn get_currency_exchange_rate(
     currency_code: &CurrencyCode,
 ) -> Result<Decimal, CurrencyExchangeRateError> {
-    let url = format!(
-        "https://api.nbp.pl/api/exchangerates/rates/A/{}/last/1/?format=json",
-        currency_code,
-    );
-
-    let response: NbpResponse = reqwest::blocking::Client::builder()
+    let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
-        .build()?
-        .get(url)
-        .send()?
-        .json()?;
-
-    let rate = response
-        .rates
-        .first()
-        .map(|rate| {
-            Decimal::from_f64_retain(rate.mid)
-                .unwrap_or(Decimal::ZERO)
-                .round_dp_with_strategy(4, rust_decimal::RoundingStrategy::MidpointAwayFromZero)
-        })
-        .ok_or(CurrencyExchangeRateError::RateMissing(
-            currency_code.clone(),
-        ));
-
-    if let Ok(rate) = rate
-        && rate == Decimal::ZERO
-    {
-        return Err(CurrencyExchangeRateError::InvalidRate(
-            currency_code.clone(),
-        ));
-    }
-
-    rate
+        .build()?;
+    get_currency_exchange_rate_with_client(&client, currency_code)
 }
 
 /// Reads invoice data from a JSON file path given as the sole command-line argument, constructs an Invoice
@@ -171,10 +222,13 @@ fn get_currency_exchange_rate(
 /// Returns:
 /// - `Ok(())` on successful processing and printing of the generated XML.
 /// - `Err(...)` if any I/O, deserialization, exchange-rate retrieval, or XML serialization error occurs.
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), ToolError> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        eprintln!("Usage: {} </path/to/invoice_data.json>", args[0]);
+        error!("Usage: {} </path/to/invoice_data.json>", args[0]);
         std::process::exit(1);
     }
 
@@ -188,10 +242,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Validate the invoice data for required fields and business rules before building the Invoice
     if let Err(errors) = validation::validate_invoice_data(&invoice_data) {
-        for err in errors {
-            eprintln!("Validation error at {}: {}", err.path, err.message);
+        for err in &errors {
+            error!("Validation error at {}: {}", err.path, err.message);
         }
-        std::process::exit(1);
+        return Err(ToolError::Validation(errors));
     }
 
     // TODO: generate incremental number based on last value from given month stored in db
@@ -335,7 +389,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     //println!("{invoice:?}");
-    let xml = invoice.to_xml()?;
+    let xml = invoice
+        .to_xml()
+        .map_err(|e| ToolError::InvoiceGen(e.to_string()))?;
     println!("{xml}");
 
     Ok(())
@@ -353,7 +409,7 @@ mod tests {
             "number": "FV-01-01-26",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller Corp",
                 "address": {
                     "country_code": "PL",
@@ -365,7 +421,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer Ltd",
                 "address": {
                     "country_code": "PL",
@@ -466,7 +522,7 @@ mod tests {
     #[test]
     fn test_subject_deserialize_valid() {
         let json = r#"{
-            "nip": "1234567890",
+            "nip": "8567346215",
             "name": "Test Company",
             "address": {
                 "country_code": "PL",
@@ -477,7 +533,7 @@ mod tests {
             }
         }"#;
         let subject: Subject = serde_json::from_str(json).expect("should deserialize");
-        assert_eq!(subject.nip, "1234567890");
+        assert_eq!(subject.nip, "8567346215");
         assert_eq!(subject.name, "Test Company");
     }
 
@@ -610,8 +666,8 @@ mod tests {
             serde_json::from_str(full_invoice_json()).expect("should deserialize");
         assert_eq!(data.number, Some("FV-01-01-26".to_string()));
         assert_eq!(data.currency, CurrencyCode::new("PLN"));
-        assert_eq!(data.seller.nip, "1234567890");
-        assert_eq!(data.buyer.nip, "0987654321");
+        assert_eq!(data.seller.nip, "8567346215");
+        assert_eq!(data.buyer.nip, "1765432897");
         assert_eq!(data.positions.len(), 1);
         assert!(data.payment_details.is_some());
     }
@@ -693,7 +749,7 @@ mod tests {
             "number": "FV-99",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller",
                 "address": {
                     "country_code": "PL",
@@ -704,7 +760,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer",
                 "address": {
                     "country_code": "PL",
@@ -839,7 +895,7 @@ mod tests {
             "number": "FV-EMPTY",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller",
                 "address": {
                     "country_code": "PL",
@@ -850,7 +906,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer",
                 "address": {
                     "country_code": "PL",
@@ -947,7 +1003,7 @@ mod tests {
             "number": "FV-EMPTY",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller",
                 "address": {
                     "country_code": "PL",
@@ -958,7 +1014,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer",
                 "address": {
                     "country_code": "PL",
@@ -980,7 +1036,7 @@ mod tests {
             "number": "FV-01",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller",
                 "address": {
                     "country_code": "PL",
@@ -1026,7 +1082,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer",
                 "address": {
                     "country_code": "PL",
@@ -1051,7 +1107,7 @@ mod tests {
             "number": "FV-ERR",
             "currency": "PLN",
             "seller": {
-                "nip": "1234567890",
+                "nip": "8567346215",
                 "name": "Seller",
                 "address": {
                     "country_code": "PL",
@@ -1062,7 +1118,7 @@ mod tests {
                 }
             },
             "buyer": {
-                "nip": "0987654321",
+                "nip": "1765432897",
                 "name": "Buyer",
                 "address": {
                     "country_code": "PL",
@@ -1085,5 +1141,195 @@ mod tests {
         let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
         // empty account_number and invalid SWIFT should fail validation
         assert!(validation::validate_invoice_data(&data).is_err());
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation: PL NIP checksum
+    // -------------------------------------------------------------------------
+
+    fn pl_nip_check_digit(digits9: &str) -> u32 {
+        let weights = [6u32, 5, 7, 2, 3, 4, 5, 6, 7];
+        let sum: u32 = digits9
+            .chars()
+            .zip(weights.iter())
+            .map(|(c, w)| c.to_digit(10).unwrap() * (*w))
+            .sum();
+        let checksum = sum % 11;
+        if checksum == 10 { 0 } else { checksum }
+    }
+
+    #[test]
+    fn test_validation_rejects_invalid_pl_nip_checksum() {
+        let json = r#"{
+            "number": "FV-NIP-ERR",
+            "currency": "PLN",
+            "seller": {
+                "nip": "1234567890",
+                "name": "Seller",
+                "address": {
+                    "country_code": "PL",
+                    "street": "S",
+                    "building_number": "1",
+                    "city": "C",
+                    "postal_code": "00-000"
+                }
+            },
+            "buyer": {
+                "nip": "1765432897",
+                "name": "Buyer",
+                "address": {
+                    "country_code": "PL",
+                    "street": "B",
+                    "building_number": "2",
+                    "city": "D",
+                    "postal_code": "11-111"
+                }
+            },
+            "positions": [
+                {"name": "Item", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ]
+        }"#;
+        let data: InvoiceData = serde_json::from_str(json).expect("should deserialize");
+        assert!(validation::validate_invoice_data(&data).is_err());
+    }
+
+    #[test]
+    fn test_validation_accepts_valid_pl_nip_checksum() {
+        let digits9 = "856734621";
+        let check = pl_nip_check_digit(digits9);
+        let full = format!("{}{}", digits9, check);
+
+        let seller = serde_json::json!({
+            "nip": full,
+            "name": "Seller",
+            "address": {
+                "country_code": "PL",
+                "street": "S",
+                "building_number": "1",
+                "city": "C",
+                "postal_code": "00-000"
+            }
+        });
+
+        let buyer = serde_json::json!({
+            "nip": "1765432897",
+            "name": "Buyer",
+            "address": {
+                "country_code": "PL",
+                "street": "B",
+                "building_number": "2",
+                "city": "D",
+                "postal_code": "11-111"
+            }
+        });
+
+        let json_value = serde_json::json!({
+            "number": "FV-NIP-OK",
+            "currency": "PLN",
+            "seller": seller,
+            "buyer": buyer,
+            "positions": [
+                {"name": "Item", "count": "1", "price": "10.00", "tax_rate": "23"}
+            ]
+        });
+
+        let json = serde_json::to_string(&json_value).unwrap();
+        let data: InvoiceData = serde_json::from_str(&json).expect("should deserialize");
+        assert!(validation::validate_invoice_data(&data).is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // Currency exchange rate fetching (uses injectable base URL via NBP_API_BASE)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_get_currency_exchange_rate_success() {
+        use httpmock::MockServer;
+        let server = MockServer::start();
+
+        let body = r#"{ "table": "A", "currency": "US DOLLAR", "code": "USD", "rates": [{ "no": "001/A/NBP/2026", "effectiveDate": "2026-01-01", "mid": 4.1234 }] }"#;
+        let m = server.mock(|when, then| {
+            when.method("GET")
+                .path("/api/exchangerates/rates/A/USD/last/1/")
+                .query_param("format", "json");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .body(body);
+        });
+
+        let currency_code: CurrencyCode = serde_json::from_str("\"USD\"").unwrap();
+        let client = reqwest::blocking::Client::builder().build().unwrap();
+        let rate =
+            get_currency_exchange_rate_with_base(&client, &currency_code, &server.base_url())
+                .unwrap();
+        assert_eq!(rate.to_string(), "4.1234");
+
+        m.assert();
+    }
+
+    #[test]
+    fn test_get_currency_exchange_rate_missing() {
+        use httpmock::MockServer;
+        let server = MockServer::start();
+
+        let body = r#"{ "table": "A", "currency": "US DOLLAR", "code": "USD", "rates": [] }"#;
+        let m = server.mock(|when, then| {
+            when.method("GET")
+                .path("/api/exchangerates/rates/A/USD/last/1/")
+                .query_param("format", "json");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .body(body);
+        });
+
+        let currency_code: CurrencyCode = serde_json::from_str("\"USD\"").unwrap();
+        let client = reqwest::blocking::Client::builder().build().unwrap();
+        let err = get_currency_exchange_rate_with_base(&client, &currency_code, &server.base_url())
+            .unwrap_err();
+        match err {
+            CurrencyExchangeRateError::RateMissing(code) => assert_eq!(code, "USD"),
+            _ => panic!("expected RateMissing"),
+        }
+
+        m.assert();
+    }
+
+    #[test]
+    fn test_is_valid_pl_nip_accepts_formatted_inputs() {
+        // Accept spaces and dashes
+        assert!(validation::is_valid_pl_nip("856 734 6215"));
+        assert!(validation::is_valid_pl_nip("856-734-6215"));
+    }
+
+    #[test]
+    fn test_is_valid_pl_nip_rejects_non_digits() {
+        assert!(!validation::is_valid_pl_nip("85A7346215"));
+    }
+
+    #[test]
+    fn test_get_currency_exchange_rate_zero_is_invalid() {
+        use httpmock::MockServer;
+        let server = MockServer::start();
+
+        let body = r#"{ "table": "A", "currency": "US DOLLAR", "code": "USD", "rates": [{ "no": "001/A/NBP/2026", "effectiveDate": "2026-01-01", "mid": 0.0 }] }"#;
+        let m = server.mock(|when, then| {
+            when.method("GET")
+                .path("/api/exchangerates/rates/A/USD/last/1/")
+                .query_param("format", "json");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .body(body);
+        });
+
+        let currency_code: CurrencyCode = serde_json::from_str("\"USD\"").unwrap();
+        let client = reqwest::blocking::Client::builder().build().unwrap();
+        let err = get_currency_exchange_rate_with_base(&client, &currency_code, &server.base_url())
+            .unwrap_err();
+        match err {
+            CurrencyExchangeRateError::InvalidRate(code) => assert_eq!(code, "USD"),
+            _ => panic!("expected InvalidRate"),
+        }
+
+        m.assert();
     }
 }

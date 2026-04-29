@@ -1,23 +1,104 @@
 use rust_decimal::Decimal;
+use std::fmt;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ValidationError {
     pub path: String,
     pub message: String,
 }
 
-pub type ValidationErrors = Vec<ValidationError>;
+#[derive(Debug, Default)]
+pub struct ValidationErrors(pub Vec<ValidationError>);
+
+impl std::ops::Deref for ValidationErrors {
+    type Target = Vec<ValidationError>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Vec<ValidationError>> for ValidationErrors {
+    fn from(v: Vec<ValidationError>) -> Self {
+        ValidationErrors(v)
+    }
+}
+
+impl<'a> IntoIterator for &'a ValidationErrors {
+    type Item = &'a ValidationError;
+    type IntoIter = std::slice::Iter<'a, ValidationError>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl fmt::Display for ValidationErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, e) in self.0.iter().enumerate() {
+            if i > 0 {
+                writeln!(f)?;
+            }
+            write!(f, "{}: {}", e.path, e.message)?;
+        }
+        Ok(())
+    }
+}
 
 fn add_err(errors: &mut ValidationErrors, path: impl Into<String>, message: impl Into<String>) {
-    errors.push(ValidationError {
+    errors.0.push(ValidationError {
         path: path.into(),
         message: message.into(),
     });
 }
 
+/// Validate Polish NIP using checksum algorithm.
+/// Accepts strings that may contain separators; only digits are considered.
+pub fn is_valid_pl_nip(nip: &str) -> bool {
+    let digits: Vec<u32> = nip
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .map(|c| c.to_digit(10).unwrap())
+        .collect();
+    if digits.len() != 10 {
+        return false;
+    }
+
+    let weights = [6u32, 5, 7, 2, 3, 4, 5, 6, 7];
+    let sum: u32 = digits
+        .iter()
+        .take(9)
+        .enumerate()
+        .map(|(i, d)| d * weights[i])
+        .sum();
+
+    let checksum = sum % 11;
+    if checksum == 10 {
+        return false;
+    }
+    checksum == digits[9]
+}
+
+// Helper: check trimmed non-empty
+fn check_non_empty(
+    errors: &mut ValidationErrors,
+    path: impl Into<String>,
+    val: &str,
+    msg: impl Into<String>,
+) {
+    if val.trim().is_empty() {
+        add_err(errors, path, msg);
+    }
+}
+
+// Helper: check country code length == 2
+fn check_country_code(errors: &mut ValidationErrors, path: impl Into<String>, code: &str) {
+    if code.len() != 2 {
+        add_err(errors, path, "country_code must be two letters");
+    }
+}
+
 // Validation runs after serde deserialization. It uses types from the parent module via `super::`.
 pub fn validate_invoice_data(data: &super::InvoiceData) -> Result<(), ValidationErrors> {
-    let mut errors: ValidationErrors = Vec::new();
+    let mut errors: ValidationErrors = ValidationErrors::default();
 
     // number: must be present and not empty when trimmed
     if data.number.is_none() {
@@ -47,51 +128,51 @@ pub fn validate_invoice_data(data: &super::InvoiceData) -> Result<(), Validation
         if is_seller && subj.nip.trim().is_empty() {
             add_err(errors, format!("{}.nip", key), "nip is empty");
         }
-        // If NIP present and country_code == "PL", validate 10 digits
-        if !subj.nip.trim().is_empty() && subj.address.country_code.as_str() == "PL" {
-            let digits: String = subj.nip.chars().filter(|c| c.is_ascii_digit()).collect();
-            if digits.len() != 10 {
-                add_err(
-                    errors,
-                    format!("{}.nip", key),
-                    "PL NIP must contain 10 digits",
-                );
-            }
+        // If NIP present and country_code == "PL", validate checksum
+        if !subj.nip.trim().is_empty()
+            && subj.address.country_code.as_str() == "PL"
+            && !is_valid_pl_nip(&subj.nip)
+        {
+            add_err(
+                errors,
+                format!("{}.nip", key),
+                "PL NIP is invalid (checksum or length)",
+            );
         }
 
-        if subj.name.trim().is_empty() {
-            add_err(errors, format!("{}.name", key), "name is empty");
-        }
+        check_non_empty(errors, format!("{}.name", key), &subj.name, "name is empty");
 
         // Address fields presence
         let addr = &subj.address;
-        if addr.country_code.as_str().len() != 2 {
-            add_err(
-                errors,
-                format!("{}.address.country_code", key),
-                "country_code must be two letters",
-            );
-        }
-        if addr.street.trim().is_empty() {
-            add_err(errors, format!("{}.address.street", key), "street is empty");
-        }
-        if addr.building_number.trim().is_empty() {
-            add_err(
-                errors,
-                format!("{}.address.building_number", key),
-                "building_number is empty",
-            );
-        }
-        if addr.city.trim().is_empty() {
-            add_err(errors, format!("{}.address.city", key), "city is empty");
-        }
-        if addr.postal_code.trim().is_empty() {
-            add_err(
-                errors,
-                format!("{}.address.postal_code", key),
-                "postal_code is empty",
-            );
-        }
+        check_country_code(
+            errors,
+            format!("{}.address.country_code", key),
+            addr.country_code.as_str(),
+        );
+        check_non_empty(
+            errors,
+            format!("{}.address.street", key),
+            &addr.street,
+            "street is empty",
+        );
+        check_non_empty(
+            errors,
+            format!("{}.address.building_number", key),
+            &addr.building_number,
+            "building_number is empty",
+        );
+        check_non_empty(
+            errors,
+            format!("{}.address.city", key),
+            &addr.city,
+            "city is empty",
+        );
+        check_non_empty(
+            errors,
+            format!("{}.address.postal_code", key),
+            &addr.postal_code,
+            "postal_code is empty",
+        );
     }
 
     validate_subject(&data.seller, "seller", true, &mut errors);
@@ -158,7 +239,7 @@ pub fn validate_invoice_data(data: &super::InvoiceData) -> Result<(), Validation
         // period is u16 by type; no additional check required here
     }
 
-    if errors.is_empty() {
+    if errors.0.is_empty() {
         Ok(())
     } else {
         Err(errors)
