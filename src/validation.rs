@@ -51,13 +51,15 @@ fn add_err(errors: &mut ValidationErrors, path: impl Into<String>, message: impl
 }
 
 /// Validate Polish NIP using checksum algorithm.
-/// Accepts strings that may contain separators; only digits are considered.
+/// Reject inputs that contain non-digit characters; only pure 10-digit strings
+/// are considered valid.
 pub fn is_valid_pl_nip(nip: &str) -> bool {
-    let digits: Vec<u32> = nip
-        .chars()
-        .filter(|c| c.is_ascii_digit())
-        .map(|c| c.to_digit(10).unwrap())
-        .collect();
+    // Only accept strings composed entirely of ASCII digits
+    if !nip.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+
+    let digits: Vec<u32> = nip.chars().map(|c| c.to_digit(10).unwrap()).collect();
     if digits.len() != 10 {
         return false;
     }
@@ -89,10 +91,14 @@ fn check_non_empty(
     }
 }
 
-// Helper: check country code length == 2
+// Helper: check country code length == 2 and uppercase ASCII letters
 fn check_country_code(errors: &mut ValidationErrors, path: impl Into<String>, code: &str) {
-    if code.len() != 2 {
-        add_err(errors, path, "country_code must be two letters");
+    if code.len() != 2 || !code.chars().all(|c| c.is_ascii_uppercase()) {
+        add_err(
+            errors,
+            path,
+            "country_code must be two uppercase ASCII letters",
+        );
     }
 }
 

@@ -1295,10 +1295,10 @@ mod tests {
     }
 
     #[test]
-    fn test_is_valid_pl_nip_accepts_formatted_inputs() {
-        // Accept spaces and dashes
-        assert!(validation::is_valid_pl_nip("856 734 6215"));
-        assert!(validation::is_valid_pl_nip("856-734-6215"));
+    fn test_is_valid_pl_nip_rejects_formatted_inputs() {
+        // Formatted inputs containing spaces or dashes should be rejected
+        assert!(!validation::is_valid_pl_nip("856 734 6215"));
+        assert!(!validation::is_valid_pl_nip("856-734-6215"));
     }
 
     #[test]
