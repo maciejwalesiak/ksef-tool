@@ -181,13 +181,28 @@ fn get_currency_exchange_rate_with_base(
                         }
                     },
                     Err(e) => {
-                        // Non-2xx status codes: map 404 -> RateMissing, others -> RequestError
-                        if e.status() == Some(reqwest::StatusCode::NOT_FOUND) {
+                        let status = e.status();
+                        if status == Some(reqwest::StatusCode::NOT_FOUND) {
                             return Err(CurrencyExchangeRateError::RateMissing(
                                 currency_code.as_str().to_string(),
                             ));
                         }
-                        return Err(CurrencyExchangeRateError::RequestError(e));
+
+                        let retryable = matches!(
+                            status,
+                            Some(
+                                reqwest::StatusCode::TOO_MANY_REQUESTS
+                                    | reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                                    | reqwest::StatusCode::BAD_GATEWAY
+                                    | reqwest::StatusCode::SERVICE_UNAVAILABLE
+                                    | reqwest::StatusCode::GATEWAY_TIMEOUT
+                            )
+                        );
+
+                        if !retryable || attempt + 1 == MAX_RETRIES {
+                            return Err(CurrencyExchangeRateError::RequestError(e));
+                        }
+                    }
                     }
                 }
             }
