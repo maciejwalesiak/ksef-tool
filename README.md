@@ -12,6 +12,14 @@ build: ```cargo build```
 
 run: ```./target/debug/ksef-tool </path/to/invoice_data.json>```
 
+Logging:
+
+- ksef-tool uses the log crate with env_logger. The default log level is "info" if RUST_LOG is not set. To control verbosity set RUST_LOG. Examples:
+  - `RUST_LOG=debug ./target/debug/ksef-tool /path/to/invoice_data.json`
+  - `RUST_LOG=error ./target/debug/ksef-tool /path/to/invoice_data.json`
+
+The RUST_LOG environment variable controls which log events are emitted.
+
 Example of invoice descriptor json:  
 
 ```json
