@@ -87,7 +87,7 @@ mod validation;
 
 #[derive(Debug, Error)]
 enum CurrencyExchangeRateError {
-    #[error("currency exchange rate request error")]
+    #[error("currency exchange rate request error: {0}")]
     RequestError(#[from] reqwest::Error),
     #[error("{0} currency exchange rate is missing")]
     RateMissing(String),
@@ -142,37 +142,62 @@ fn get_currency_exchange_rate_with_base(
         base, currency_code,
     );
 
-    let mut last_err: Option<reqwest::Error> = None;
-
     for attempt in 0..MAX_RETRIES {
         match client.get(&url).send() {
-            Ok(resp) => match resp.json::<NbpResponse>() {
-                Ok(response) => {
-                    let mid = response.rates.first().map(|r| r.mid).ok_or(
-                        CurrencyExchangeRateError::RateMissing(currency_code.as_str().to_string()),
-                    )?;
+            Ok(resp) => {
+                // Inspect HTTP status before attempting to parse JSON
+                match resp.error_for_status() {
+                    Ok(success_resp) => match success_resp.json::<NbpResponse>() {
+                        Ok(response) => {
+                            let mid = response.rates.first().map(|r| r.mid).ok_or(
+                                CurrencyExchangeRateError::RateMissing(
+                                    currency_code.as_str().to_string(),
+                                ),
+                            )?;
 
-                    // from_f64_retain returns Option<Decimal> when NaN/Inf; treat as invalid
-                    let dec = Decimal::from_f64_retain(mid).ok_or(
-                        CurrencyExchangeRateError::InvalidRate(currency_code.as_str().to_string()),
-                    )?;
+                            // from_f64_retain returns Option<Decimal> when NaN/Inf; treat as invalid
+                            let dec = Decimal::from_f64_retain(mid).ok_or(
+                                CurrencyExchangeRateError::InvalidRate(
+                                    currency_code.as_str().to_string(),
+                                ),
+                            )?;
 
-                    let dec = dec.round_dp_with_strategy(
-                        4,
-                        rust_decimal::RoundingStrategy::MidpointAwayFromZero,
-                    );
+                            let dec = dec.round_dp_with_strategy(
+                                4,
+                                rust_decimal::RoundingStrategy::MidpointAwayFromZero,
+                            );
 
-                    if dec == Decimal::ZERO {
-                        return Err(CurrencyExchangeRateError::InvalidRate(
-                            currency_code.as_str().to_string(),
-                        ));
+                            if dec == Decimal::ZERO {
+                                return Err(CurrencyExchangeRateError::InvalidRate(
+                                    currency_code.as_str().to_string(),
+                                ));
+                            }
+
+                            return Ok(dec);
+                        }
+                        Err(e) => {
+                            // JSON parsing error is not transient; return immediately
+                            return Err(CurrencyExchangeRateError::RequestError(e));
+                        }
+                    },
+                    Err(e) => {
+                        // Non-2xx status codes: map 404 -> RateMissing, others -> RequestError
+                        if e.status() == Some(reqwest::StatusCode::NOT_FOUND) {
+                            return Err(CurrencyExchangeRateError::RateMissing(
+                                currency_code.as_str().to_string(),
+                            ));
+                        }
+                        return Err(CurrencyExchangeRateError::RequestError(e));
                     }
-
-                    return Ok(dec);
                 }
-                Err(e) => last_err = Some(e),
-            },
-            Err(e) => last_err = Some(e),
+            }
+            Err(e) => {
+                // Network-level error: retry unless this was the last attempt
+                if attempt + 1 == MAX_RETRIES {
+                    return Err(CurrencyExchangeRateError::RequestError(e));
+                }
+                // otherwise sleep and retry
+            }
         }
 
         if attempt + 1 < MAX_RETRIES {
@@ -181,9 +206,8 @@ fn get_currency_exchange_rate_with_base(
         }
     }
 
-    Err(CurrencyExchangeRateError::RequestError(
-        last_err.expect("request failed and no error captured"),
-    ))
+    // Should not be reachable because errors return early
+    unreachable!("request loop exited without producing a result or error");
 }
 
 fn get_currency_exchange_rate_with_client(
