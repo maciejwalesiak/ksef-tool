@@ -203,7 +203,6 @@ fn get_currency_exchange_rate_with_base(
                             return Err(CurrencyExchangeRateError::RequestError(e));
                         }
                     }
-                    }
                 }
             }
             Err(e) => {
